@@ -91,6 +91,7 @@ Esta é a etapa mais fácil de esquecer — foque nela. Pergunta central: **exis
 - **QA-BLOCK-04 — Permissão / autorização ausente.** Gatilho: `EP` novo/alterado. A rota/ação exige o mecanismo de permissão do projeto (middleware/policy — ver overlay/CLAUDE.md)? FAIL = usuário sem permissão acessa rota, ação ou dado.
 - **QA-BLOCK-05 — Estado inconsistente aceito.** Gatilho: `CRIT` não vazio. O diff permite estado que as regras críticas do overlay proíbem (ex: quantidade/saldo negativo, registro pulando etapa obrigatória do fluxo, reversão automática de operação declarada irreversível)? FAIL com o cenário concreto de estado inválido resultante.
 - **QA-BLOCK-06 — Campo obrigatório de negócio sem validação.** Gatilho: `MUT` com campo que é obrigatório pela **regra de negócio** (não só pelo schema). Fica sem validação, permitindo registro logicamente incompleto?
+- **QA-BLOCK-07 — Gate condicional cobre o caso real, não só o caso de exemplo.** Gatilho: o diff introduz ou amplia um gate (permissão, liberação de campo/ação, autoridade de edição) condicionado à presença de um valor específico dentro de um domínio mais amplo (ex: "só quando o campo X contém o valor Y", "só quando o registro pertence à categoria Z", "só quando Y está entre os itens de uma lista selecionável"). Rode uma consulta **read-only** nos dados reais (mesmo acesso a banco desta seção) para checar a distribuição desse valor: quantos registros existentes/realistas satisfazem a condição vs. quantos não satisfazem. Compare o resultado com a intenção de negócio **declarada pelo usuário** — não com a descrição da implementação recebida no prompt desta revisão (se só a implementação foi descrita, releia o pedido original quando disponível, ou verifique explicitamente se o caso comum do domínio está coberto). FAIL se a intenção é cobrir o caso geral/majoritário mas o valor de que o gate depende é raro ou ausente na maioria dos registros reais — mesmo que a implementação seja internamente consistente e passe nos demais itens. Cite a query e a contagem real como evidência. Este item existe porque esse tipo de lacuna não aparece testando só o cenário de exemplo que a implementação foi desenhada para cobrir — só aparece testando contra a distribuição real do domínio.
 
 ## Etapa 4 — Falhas silenciosas e tratamento de erro
 
@@ -167,6 +168,7 @@ Liste **cada** item `QA-*` com seu veredito e 1 linha de evidência. Itens `N/A`
 - QA-BLOCK-04: ...
 - QA-BLOCK-05: ...
 - QA-BLOCK-06: ...
+- QA-BLOCK-07: ...
 ### Etapa 4 — Falhas silenciosas
 - QA-SILENT-01: ...
 - QA-SILENT-02: ...
@@ -183,11 +185,11 @@ Liste **cada** item `QA-*` com seu veredito e 1 linha de evidência. Itens `N/A`
 - BLOCKERs: N
 - WARNINGs: N
 - INFOs: N
-- Itens: PASS N / FAIL N / N/A N (de 25 itens base + K overrides/EXTRAs do overlay, se houver)
+- Itens: PASS N / FAIL N / N/A N (de 26 itens base + K overrides/EXTRAs do overlay, se houver)
 - Cenários cobertos: [síntese curta do que foi de fato testado/considerado por etapa — inclusive o que passou]
 - Inventário (Etapa 0): EP=N, MUT=N, FK=N, IN=N, CATCH=N, CRIT=N
 - Etapas não concluídas: [nenhuma, ou qual e por quê — ex: "Etapa 1 não verificada em banco, apenas leitura estática"]
 - Cobertura: COMPLETA / PARCIAL
 ```
 
-> `Cobertura: PARCIAL` **apenas** se você não conseguiu emitir veredito para algum item (ex: banco indisponível para `QA-HAPPY-02`/`QA-HAPPY-04`, ou diff grande cortado por prioridade). Todo item sem veredito precisa aparecer em "Etapas não concluídas". Se todos os 25 itens receberam PASS/FAIL/N/A, a cobertura é COMPLETA — mesmo que haja FAILs.
+> `Cobertura: PARCIAL` **apenas** se você não conseguiu emitir veredito para algum item (ex: banco indisponível para `QA-HAPPY-02`/`QA-HAPPY-04`, ou diff grande cortado por prioridade). Todo item sem veredito precisa aparecer em "Etapas não concluídas". Se todos os 26 itens receberam PASS/FAIL/N/A, a cobertura é COMPLETA — mesmo que haja FAILs.
