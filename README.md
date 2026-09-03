@@ -10,7 +10,7 @@ Criei esse repositório pra parar de passar a skill por zip/copy-paste — todo 
 
 Revisão pré-build com três revisores especializados rodando **em paralelo**, cada um olhando o diff por um ângulo diferente:
 
-- **QA** — corretude funcional, casos de fronteira, bloqueios de negócio ausentes e falhas silenciosas (checklist `QA-*`, 28 itens)
+- **QA** — corretude funcional, casos de fronteira, bloqueios de negócio ausentes e falhas silenciosas (checklist `QA-*`, 29 itens)
 - **Sênior** — design/arquitetura, corretude e regressão, convenções do projeto e manutenibilidade, com verificação ativa no codebase (checklist `SR-*`)
 - **Gerente UX** — fluxo, clareza, perda de trabalho e consistência do ponto de vista do usuário final, ancorado nas 10 Heurísticas de Nielsen (grade `UX-*`, 20 itens)
 
