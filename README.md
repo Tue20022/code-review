@@ -10,9 +10,11 @@ Criei esse repositório pra parar de passar a skill por zip/copy-paste — todo 
 
 Revisão pré-build com três revisores especializados rodando **em paralelo**, cada um olhando o diff por um ângulo diferente:
 
-- **QA** — corretude funcional, casos de fronteira, bloqueios de negócio ausentes e falhas silenciosas (checklist `QA-*`, 25 itens)
+- **QA** — corretude funcional, casos de fronteira, bloqueios de negócio ausentes e falhas silenciosas (checklist `QA-*`, 29 itens)
 - **Sênior** — design/arquitetura, corretude e regressão, convenções do projeto e manutenibilidade, com verificação ativa no codebase (checklist `SR-*`)
-- **Gerente UX** — fluxo, clareza, perda de trabalho e consistência do ponto de vista do usuário final, ancorado nas 10 Heurísticas de Nielsen (grade `UX-*`)
+- **Gerente UX** — fluxo, clareza, perda de trabalho e consistência do ponto de vista do usuário final, ancorado nas 10 Heurísticas de Nielsen (grade `UX-*`, 20 itens)
+
+**QA e UX abrem a tela de verdade.** Quando a mudança tem interface e o [MCP Playwright](https://github.com/microsoft/playwright-mcp) está configurado, os dois navegam a aplicação com um browser real em vez de julgar pelo template — pegando a classe de defeito que leitura de código não pega: a tela que carrega em branco, o botão que não dispara, o erro de JS, o dado que a tela mostra diferente do que está no banco. Sem o MCP ou sem o overlay configurado, os itens E2E saem `N/A` e a revisão segue normalmente.
 
 No final, um orquestrador consolida tudo: deduplica, aplica gate de confiança e compara com o **baseline da branch**. Cada achado sai rotulado — `NOVO` / `REGRESSÃO` / `PRÉ-EXISTENTE` / `PERSISTENTE` — e o veredito depende do que **mudou** desde a última rodada. Ou seja: dívida antiga vira dívida conhecida, não trava o build de novo a cada revisão.
 
@@ -28,6 +30,16 @@ De quebra, tem uma **retrospectiva automática**: quando um problema escapa de u
 ```
 
 Pronto — `/triple-review` fica disponível em qualquer projeto.
+
+### Opcional: verificação em browser (QA e UX)
+
+Para que QA e UX abram a tela de verdade, configure o MCP Playwright e reinicie a sessão:
+
+```
+claude mcp add playwright -s user -- npx @playwright/mcp@latest --headless --isolated
+```
+
+Depois instale o browser: `npx playwright install chromium`. No WSL o `--headless` não é opcional — sem display gráfico, o modo com janela falha. Falta declarar também a seção **"Ambiente de navegação (E2E)"** no overlay (abaixo), com base URL, comando de subida e credenciais de teste.
 
 ## Configuração por projeto (recomendado)
 
