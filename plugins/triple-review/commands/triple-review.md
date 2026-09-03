@@ -57,6 +57,50 @@ Se `{CMD_DIFF} --stat {PATHSPEC}` vier vazio, informe ao usuário e pare:
 - Ambos → concatene com ` + `
 - Nenhum → `STACK="Genérico (nenhum stack reconhecido nos arquivos alterados)"` e avise que os agentes usarão análise genérica
 
+**Detectar arquivos adjacentes (escritores irmãos, heurística barata — grep, sem custo de LLM):**
+
+> Por que este passo existe: a revisão é *por diff*, de propósito (é o que mantém o foco e o custo baixos). Mas isso tem um ponto cego estrutural — se o diff grava um campo de estado/status de um recurso que **outro** arquivo, nunca tocado por este diff, também grava a partir de um fluxo diferente, esse outro arquivo é estruturalmente invisível à revisão, mesmo que o defeito real esteja exatamente na interação entre os dois (ex.: dois services de domínios diferentes decidindo o status do mesmo registro sem se conhecer). Isso não é algo que um item de checklist resolve sozinho — o Sênior só consegue aplicar `SR-CTX-04`/`SR-CORR-12` se souber que esse arquivo irmão existe. Este passo entrega essa pista de graça, antes de qualquer agente rodar.
+
+Só quando `STACK` inclui `Laravel`:
+
+```bash
+# 1) Nas linhas adicionadas (+) do DIFF_FILE, extrai o nome do CAMPO/COLUNA atribuído
+#    quando o campo parece ser de estado/status (convenção Eloquent: atribuição de
+#    propriedade `->CAMPO = valor` ou array de `update`/`create`/`fill` `'CAMPO' => valor`).
+#    Usa o nome do campo, não o nome da classe/variável — a classe geralmente não aparece
+#    na mesma linha (`$registro->save()` não contém o nome do Model), mas o nome do campo
+#    sim. Ajuste os termos de campo ao vocabulário do projeto se o overlay declarar outros
+#    (ver "Customização para outros projetos" no fim deste arquivo).
+grep -oP "(?<=->)[A-Z][A-Z0-9_]*(?=\s*=[^=])|(?<=')[A-Z][A-Z0-9_]*(?='\s*=>)" {DIFF_FILE} \
+  | grep -iE 'status|situacao|situação' \
+  | sort -u > /tmp/triple-review-campos-status.txt
+
+# 2) Para cada campo, procura OUTROS arquivos (fora de LISTA_ARQUIVOS_TODOS) que também
+#    atribuem esse mesmo campo — são os escritores irmãos. Best-effort: falso negativo aqui
+#    só significa que o passo não ajuda nesta rodada, não trava nada.
+while read -r campo; do
+  grep -rlE "(->${campo}\s*=[^=]|'${campo}'\s*=>)" app/Services app/Http/Controllers 2>/dev/null
+done < /tmp/triple-review-campos-status.txt \
+  | grep -vFf <(printf '%s\n' "${LISTA_ARQUIVOS_TODOS}") \
+  | sort -u | head -5 > /tmp/triple-review-arquivos-adjacentes.txt
+```
+
+Se o resultado não for vazio → `ARQUIVOS_ADJACENTES` = o conteúdo do arquivo (até 5 caminhos). Leia cada um (Read, sem limite de linhas incomum — são arquivos de produção normais) e guarde um resumo de 1–2 frases por arquivo: o que ele escreve no mesmo campo e sob qual condição. Esse resumo (não o conteúdo inteiro) é o que entra no prompt do Sênior no Passo 5.
+
+Se vazio, ou `STACK` não inclui Laravel → `ARQUIVOS_ADJACENTES` vazio, omita o bloco correspondente no prompt do Sênior.
+
+> **Isto é uma pista, não uma expansão do escopo revisado.** `ARQUIVOS_ADJACENTES` nunca entra em `LISTA_ARQUIVOS_TODOS`, nunca é citado como "achado neste arquivo" fora do contexto de `SR-CTX-04`/`SR-CORR-12`, e nunca conta para `ARQUIVOS_COUNT`/`LINHAS_DIFF`. O Sênior lê esses arquivos só para avaliar a interação com o diff — não os revisa por conta própria (não vira achado "código pré-existente ruim" nesses arquivos).
+
+**Detectar se o diff toca interface** — decide se a evidência de navegação real será exigida (Passo 4.5). A partir de `LISTA_ARQUIVOS_TODOS`, `UI_TOCADA=true` se houver **qualquer**:
+- arquivo de template/view (`.blade.php`, `.html`, `.vue`, `.svelte`, `.jsx`, `.tsx`, `.twig`, `.erb`)
+- arquivo de estilo ou asset de front (`.css`, `.scss`, `.js`, `.ts` fora de teste)
+- arquivo de rota de interface (rotas web, não só API) ou componente de UI (Livewire, Filament, Nova)
+- controller/service/model/migration **cujo dado alguma tela consome** — este caso é o que passa despercebido; não tente resolvê-lo aqui por heurística de nome de arquivo, apenas marque `UI_TOCADA=indeterminado` e deixe que os agentes decidam pelo Grep de consumidores (Etapa 0 do QA e do UX)
+
+Sem nenhum dos casos acima (ex: só comando artisan, job, config, teste) → `UI_TOCADA=false`.
+
+> `UI_TOCADA` é um **gatilho de preparação de ambiente**, não um veredito. Quem decide se cada item E2E é obrigatório é o agente, a partir do conjunto `UI`/superfícies que ele mesmo mapeia. `indeterminado` e `true` levam ao mesmo tratamento no Passo 4.5 — prepare o ambiente e deixe o agente resolver.
+
 ---
 
 ## Passo 2 — Gravar DIFF_FILE
@@ -141,15 +185,70 @@ Se tiver **1–3 palavras, não descarte**: use como semente e complemente com a
 4. Se nada disponível: `FEATURE_CONTEXT = "Não especificado — análise baseada apenas no diff"`
 
 Informe antes de disparar (puramente informativo — não aguarde resposta):
-> "📝 Contexto: [FEATURE_CONTEXT] (fonte: [argumento/branch/commits/docs]). Baseline: [primeira revisão desta branch / comparando com a revisão de <data do baseline>]. Os 3 agentes já estão sendo disparados. Se o contexto estiver incorreto, **interrompa (Esc)** e rode `/triple-review <descrição correta>` — do contrário a espera é de 3–10 min. [Se houve `git add -N`: "Arquivos não rastreados incluídos na revisão: <lista> (marcação já desfeita no índice)."] Disparando os 3 agentes..."
+> "📝 Contexto: [FEATURE_CONTEXT] (fonte: [argumento/branch/commits/docs]). Baseline: [primeira revisão desta branch / comparando com a revisão de <data do baseline>]. Os agentes já estão sendo disparados. Se o contexto estiver incorreto, **interrompa (Esc)** e rode `/triple-review <descrição correta>` — do contrário a espera é de 3–10 min (6–15 min quando há navegação em browser, por causa da serialização do Passo 5b). [Se houve `git add -N`: "Arquivos não rastreados incluídos na revisão: <lista> (marcação já desfeita no índice)."] Disparando os 3 agentes..."
 
 ---
 
-## Passo 5 — Disparar os 3 agentes em paralelo
+## Passo 4.5 — Preparar o ambiente de navegação (E2E)
 
-Dispare **simultaneamente** (três chamadas Agent em uma mesma mensagem) com `run_in_background: true`.
+QA e Gerente UX exigem **evidência de execução real** quando a mudança tem tela: eles navegam a aplicação com as tools `browser_*` do MCP Playwright, em vez de julgar a interface só pelo template. Este passo garante que o ambiente esteja de pé **antes** do disparo — um agente descobrindo sozinho que a aplicação está fora do ar desperdiça minutos e devolve `FAIL` de infraestrutura em vez de revisão.
 
-> **Paralelismo:** "simultaneamente" = três Agent calls na mesma mensagem. A gravação do `DIFF_FILE` (Passo 2) é feita antes — não conflita com o paralelismo.
+**Se `UI_TOCADA=false`**, pule este passo inteiro e defina `E2E_STATUS="não aplicável — diff sem superfície de interface"`. Os itens `QA-E2E-*` e `UX-E2E-*` sairão `N/A`, resolvidos pelo próprio agente.
+
+**Se `UI_TOCADA` for `true` ou `indeterminado`:**
+
+1. **Leia a seção "Ambiente de navegação (E2E)"** de `docs/triple-review-tuning/customizacao.md`.
+   Ausente → `E2E_STATUS="overlay sem seção de ambiente E2E"`. Avise o usuário uma vez:
+   > "⚠️ O overlay não declara a seção 'Ambiente de navegação (E2E)' — QA e UX vão revisar sem abrir a tela. Para ativar a verificação em browser, declare base URL, comando de subida e credenciais de teste em `docs/triple-review-tuning/customizacao.md`."
+
+2. **Verifique se o servidor MCP Playwright está disponível** (as tools `browser_*` aparecem na sua lista de ferramentas). Ausente → `E2E_STATUS="MCP Playwright não configurado"` e avise:
+   > "⚠️ Servidor MCP Playwright indisponível — QA e UX vão revisar sem abrir a tela. Configure com: `claude mcp add playwright -s user -- npx @playwright/mcp@latest --headless --isolated` e reinicie a sessão."
+
+3. **Confirme que a aplicação responde** na base URL declarada:
+   ```bash
+   curl -s -o /dev/null -w '%{http_code}' {BASE_URL}
+   ```
+   Sem resposta → execute o comando de subida declarado no overlay (em background), aguarde alguns segundos e repita. Continuando fora do ar, `E2E_STATUS="aplicação inacessível em {BASE_URL}"` — **não bloqueie a revisão**: os agentes vão registrar `FAIL [BLOCKER] — evidência de execução ausente`, que é o veredito correto para uma mudança de UI que ninguém consegue abrir.
+
+4. Tudo certo → `E2E_STATUS="pronto — {BASE_URL}"`.
+
+Monte o bloco `{E2E_BLOCK}` para injetar nos prompts do QA e do UX:
+
+```
+## Ambiente de navegação (E2E)
+Status: {E2E_STATUS}
+Base URL: {BASE_URL}
+Credenciais e fluxo de login: seção "Ambiente de navegação (E2E)" do overlay
+Toque em interface (detecção do orquestrador): {UI_TOCADA}
+
+Use as tools browser_* do MCP Playwright para observar a tela de verdade, conforme a
+etapa E2E do seu perfil. Navegue apenas fluxos de LEITURA, salvo se o overlay declarar
+estratégia de limpeza — um clique que grava é irreversível.
+```
+
+Quando `UI_TOCADA=false`, `{E2E_BLOCK}` é a única linha `Status: não aplicável — diff sem superfície de interface`.
+
+---
+
+## Passo 5 — Disparar os agentes (QA + Sênior em paralelo, UX em seguida)
+
+**Por que não os três de uma vez:** QA e Gerente UX dirigem o **mesmo** browser — o servidor MCP Playwright é um processo só, com um contexto de navegação só. Dois agentes navegando ao mesmo tempo se sobrescrevem: o QA tira um snapshot e recebe a tela que o UX acabou de abrir. A evidência de execução vira ruído, e o pior é que ninguém percebe — os dois relatam com confiança sobre a tela errada. Por isso a fase de browser é **serializada**.
+
+O Sênior não usa browser, então ele roda junto com o QA sem conflito.
+
+### Passo 5a — QA + Sênior
+
+Dispare os dois **simultaneamente** (duas chamadas Agent na mesma mensagem) com `run_in_background: true`.
+
+### Passo 5b — Gerente UX
+
+Dispare **somente após o QA concluir** (a notificação do agente QA chegou), também com `run_in_background: true`. Se o QA falhar ou estourar o timeout, dispare o UX assim mesmo — o que não pode é sobrepor as duas navegações.
+
+> **Exceção:** se `UI_TOCADA=false` ou `E2E_STATUS` indica que não haverá navegação (overlay ausente, MCP ausente, aplicação inacessível), **não há disputa de browser** — nesse caso dispare os três simultaneamente, como antes, e o Passo 6 espera as três notificações.
+
+**Impacto no tempo:** com serialização, a revisão leva aproximadamente `QA + UX` em vez de `max(QA, Sênior, UX)` — estime 6–15 min em vez de 3–10. Ajuste a mensagem ao usuário e o timeout do Passo 6 de acordo: o relógio do UX (`T0_UX`) começa no disparo dele, não no do QA.
+
+> **Paralelismo:** "simultaneamente" = as Agent calls na mesma mensagem. A gravação do `DIFF_FILE` (Passo 2) é feita antes — não conflita com o paralelismo.
 
 Após disparar, **registre o instante do disparo** (`T0`) e **agende um despertar de fallback para ~10 min** — o mesmo limiar de timeout do Passo 6, para não prometer um prazo e acordar em outro:
 
@@ -157,14 +256,19 @@ Após disparar, **registre o instante do disparo** (`T0`) e **agende um desperta
 T0=$(date +%s)   # guarde; o Passo 6 compara com este valor
 ```
 
+> **Com a fase de browser serializada (Passo 5b):** registre `T0` no disparo do 5a e um `T0_UX` próprio no disparo do UX. O timeout de 10 min do UX conta a partir de `T0_UX` — usar `T0` para ele descontaria do seu prazo todo o tempo que o QA levou, e o UX seria dado como travado antes de começar.
+
 - **Ambiente com wakeup/timer:** agende o despertar em ~10 min a partir de `T0`. Esse é o gatilho concreto do timeout.
 - **Ambiente sem wakeup/timer:** você **não pode** simplesmente "consolidar conforme as notificações chegarem" — se um agente travar sem emitir notificação, a 3ª notificação nunca chega e a revisão esperaria para sempre, sem sinal de erro. Nesse caso, use um gatilho de tempo real bloqueante e limitado (ex: aguardar até `date +%s` passar de `T0 + 600`) e então consolide com quem respondeu. **Nunca deixe o orquestrador sem um gatilho temporal.**
 
 Emita imediatamente:
-> "3 agentes em execução simultânea — aguardando resultados (estimativa: 3–10 min dependendo do tamanho do diff). Você será notificado quando cada um finalizar."
+- Fase de browser serializada (Passo 5a/5b):
+  > "QA e Sênior em execução — o Gerente UX entra assim que o QA liberar o browser (estimativa total: 6–15 min dependendo do tamanho do diff). Você será notificado quando cada um finalizar."
+- Sem navegação (`UI_TOCADA=false` ou `E2E_STATUS` sem browser), os três disparados juntos:
+  > "3 agentes em execução simultânea — aguardando resultados (estimativa: 3–10 min dependendo do tamanho do diff). Você será notificado quando cada um finalizar."
 
 Ao receber cada notificação, emita uma confirmação específica, por exemplo:
-> "Agente QA concluído (1/3) — aguardando Sênior e Gerente UX..."
+> "Agente QA concluído (1/3) — disparando Gerente UX e aguardando Sênior..."
 
 **Se qualquer agente retornar erro de invocação** (agent type not found, unknown agent type, subagent not available, ou qualquer outra falha que impeça o agente de iniciar) — os três são agentes locais do projeto (`qa-reviewer.md` / `senior-reviewer.md` / `gerente-ux.md`), então podem faltar se a skill foi copiada para outro projeto sem os arquivos de agente:
 1. **Imediatamente** (sem esperar o timeout do Passo 6), leia o arquivo de perfil correspondente (`.claude/agents/qa-reviewer.md` para o Agente 1, `.claude/agents/senior-reviewer.md` para o Agente 2, `.claude/agents/gerente-ux.md` para o Agente 3)
@@ -177,7 +281,7 @@ Se um agente simplesmente não responder dentro do timeout (10 min), aplique o P
 
 ---
 
-Use os templates abaixo **copiando o texto e substituindo os placeholders `{STACK}`, `{DIFF_FILE}`, `{ARQUIVOS_COUNT}`, `{LINHAS_DIFF}`, `{LISTA_ARQUIVOS_TODOS}` e `{FEATURE_CONTEXT}` pelos valores coletados nos Passos 1–4**. **Resolva também os blocos condicionais entre colchetes `[Se X: "..."]`**: se a condição vale, inclua apenas o texto interno (sem colchetes); senão, remova a linha inteira. Nenhum placeholder `{...}` nem colchete condicional `[Se ...]` pode chegar literalmente ao agente. Fora isso, não altere o texto dos templates em runtime.
+Use os templates abaixo **copiando o texto e substituindo os placeholders `{STACK}`, `{DIFF_FILE}`, `{ARQUIVOS_COUNT}`, `{LINHAS_DIFF}`, `{LISTA_ARQUIVOS_TODOS}`, `{FEATURE_CONTEXT}` e `{E2E_BLOCK}` (só nos templates de QA e UX — o Sênior não navega) pelos valores coletados nos Passos 1–4.5**. **Resolva também os blocos condicionais entre colchetes `[Se X: "..."]`**: se a condição vale, inclua apenas o texto interno (sem colchetes); senão, remova a linha inteira. Nenhum placeholder `{...}` nem colchete condicional `[Se ...]` pode chegar literalmente ao agente. Fora isso, não altere o texto dos templates em runtime.
 
 > **Memória do revisor (`VEREDITOS_ANTERIORES`) — obrigatório quando `PRIMEIRA_REVISAO=false`:**
 > O baseline dá memória ao **orquestrador**, mas sem este bloco os **revisores continuam amnésicos**: cada agente re-deriva os vereditos do zero, e nada ancora a resposta desta rodada na da anterior. O resultado é que o checklist fechado torna determinística a **cobertura** (quais perguntas são feitas), mas **não o veredito** (que resposta cada pergunta recebe) — itens que exigem raciocínio multi-hop viram `PASS` numa rodada e `FAIL` na outra, em código que ninguém tocou.
@@ -220,6 +324,8 @@ Stack: {STACK}
 Feature: {FEATURE_CONTEXT}
 [Se PRIMEIRA_REVISAO=false: "{VEREDITOS_ANTERIORES}"]
 
+{E2E_BLOCK}
+
 ## Diff a revisar
 O diff completo está gravado em: {DIFF_FILE} — leia esse arquivo como primeiro passo.
 Arquivos alterados ({ARQUIVOS_COUNT} arquivos, {LINHAS_DIFF} linhas):
@@ -257,6 +363,10 @@ Arquivos alterados ({ARQUIVOS_COUNT} arquivos, {LINHAS_DIFF} linhas):
 {LISTA_ARQUIVOS_TODOS}
 [Se DIFF_GRANDE: "Diff grande — priorize arquivos de lógica de negócio (controllers/services/models), depois migrations/rotas, depois views; liste o que não analisou em 'Etapas não concluídas' e marque Cobertura: PARCIAL."]
 
+[Se ARQUIVOS_ADJACENTES não vazio: "## Escritores irmãos fora do diff (pista para SR-CTX-04/SR-CORR-12)
+Estes arquivos NÃO fazem parte do diff e não devem ser revisados por conta própria (não vire achado 'código pré-existente ruim' aqui) — leia-os só para checar se escrevem o mesmo campo de estado/status que este diff grava, e se há conflito/sobrescrita entre os dois:
+{ARQUIVOS_ADJACENTES}"]
+
 Se o stack incluir Ionic/Angular: verificar também tipagem TypeScript estrita, ausência de `any`, componentes standalone.
 
 Não avalie UX (papel do Gerente) nem falhas silenciosas/bloqueios de negócio (papel do QA) — apenas design, corretude, convenções e manutenibilidade, conforme seu perfil.
@@ -284,6 +394,8 @@ Stack: {STACK}
 Feature: {FEATURE_CONTEXT}
 [Se PRIMEIRA_REVISAO=false: "{VEREDITOS_ANTERIORES}"]
 
+{E2E_BLOCK}
+
 ## Diff a revisar
 O diff completo está gravado em: {DIFF_FILE} — leia esse arquivo como primeiro passo.
 Arquivos alterados ({ARQUIVOS_COUNT} arquivos, {LINHAS_DIFF} linhas):
@@ -297,7 +409,7 @@ Formato de saída obrigatório (conforme seu perfil): pontos positivos, achados 
 
 ## Passo 6 — Consolidar resultados (com baseline/delta)
 
-Aguarde os três agentes. **Timeout:** o gatilho concreto é o despertar (ou a espera limitada) agendado no Passo 5, ambos em ~10 min a partir de `T0` — o mesmo prazo comunicado ao usuário. Ao acordar (por notificação de conclusão ou pelo gatilho temporal), se algum agente ainda não respondeu e já se passaram 10+ minutos de `T0`, consolide sem ele.
+Aguarde os três agentes. **Timeout:** o gatilho concreto é o despertar (ou a espera limitada) agendado no Passo 5, em ~10 min a partir de `T0` — o mesmo prazo comunicado ao usuário. Com a fase de browser serializada, o UX é medido contra o seu próprio `T0_UX` (instante do disparo no Passo 5b), não contra `T0`. Ao acordar (por notificação de conclusão ou pelo gatilho temporal), se algum agente ainda não respondeu e já se passaram 10+ minutos de `T0`, consolide sem ele.
 
 > **Onde consolidar — Opção A (inline, padrão) vs Opção B (subagente `consolidador-review`):**
 > A consolidação abaixo (6a–6h) é **determinística e pesada de contexto** (um `git diff` por achado, fingerprint, gate de confiança, leitura/escrita do baseline).
@@ -532,7 +644,8 @@ Não faça build, instale o app nem execute qualquer deploy sem aprovação expl
 
 ## Regras imutáveis
 
-- **Sempre disparar os 3 revisores em paralelo** — nunca sequencialmente. **Nunca adicionar um 4º ângulo de revisão** (só ampliaria a superfície de análise, que é a causa da não-convergência). O `consolidador-review` opcional **não** é um revisor.
+- **Sempre disparar os 3 revisores na mesma rodada, com o máximo de paralelismo que o ambiente permite.** A única serialização admitida é a do Passo 5b — QA e UX disputam o mesmo browser, e navegações sobrepostas produzem evidência trocada, o que é pior do que a demora. Fora essa restrição física, nunca sequencie. **Nunca adicionar um 4º ângulo de revisão** (só ampliaria a superfície de análise, que é a causa da não-convergência). O `consolidador-review` opcional **não** é um revisor.
+- **Nunca dispensar o revisor por causa do ambiente** — se a aplicação não sobe ou o MCP não está configurado, o agente roda assim mesmo e registra a ausência de evidência como achado. Ambiente quebrado nunca vira revisão pulada em silêncio.
 - **Nunca pular o Gerente** — mudanças puramente técnicas frequentemente têm impacto de UX invisível (ex: uma migration que altera saldo disponível muda o que o almoxarife vê na tela de reserva).
 - **O diff completo nunca entra no contexto do orquestrador** — sempre via `DIFF_FILE`; aqui só circulam stat, métricas, o baseline e os achados consolidados.
 - **Memória entre rodadas é obrigatória** — sempre carregar o baseline no Passo 3 e gravar o novo no Passo 7. É o que faz o ciclo convergir.
@@ -583,3 +696,4 @@ Nunca executar INSERT, UPDATE, DELETE ou DDL.
 | Consolidador (opcional) | `consolidador-review.md` + Passo 6 (Opção B) | Mantenha genérico; só ative quando o diff for grande ou o determinismo inline estiver ameaçado |
 | Local do baseline | Passo 3 — `BASELINE_DIR` | Um caminho por branch que persista entre rodadas; recomende `.gitignore` desse diretório |
 | Comando de banco | overlay → seção "Acesso ao banco" | Adapte se não usar MySQL/Laravel; sempre read-only |
+| Detecção de escritores irmãos (Passo 1) | comando → bloco "Detectar arquivos adjacentes" | Termos de campo de estado/status (`status\|situacao\|situação`) e chamadas de escrita (`->save(`, `->update(`, `::create(`, `->fill(`) são vocabulário Eloquent/Laravel — troque pelos equivalentes do seu ORM/stack, ou desative o bloco (condicione a `STACK` que nunca bate) se seu projeto não tem esse padrão de risco |
