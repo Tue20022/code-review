@@ -49,6 +49,24 @@ sem regras críticas de domínio, sem convenções próprias, com perfis de usu�
 - Ex: botões de ação na ordem Visualizar → Editar → Excluir, com classes X/Y/Z
 - Superfícies touch (UX-TOUCH-01): ...
 
+## Ambiente de navegação (E2E)
+
+<!-- Sem esta seção, QA e UX revisam sem abrir a tela: os itens QA-E2E-* e UX-E2E-* saem N/A
+     e a revisão perde a classe de defeito que só aparece no browser (tela em branco, botão
+     que não dispara, erro de JS). Exige o servidor MCP Playwright configurado:
+     claude mcp add playwright -s user -- npx @playwright/mcp@latest --headless --isolated -->
+
+- **Base URL**: ex. `http://127.0.0.1:8000`
+- **Como subir a aplicação**: ex. `php artisan serve --port=8000` (rodar a partir da raiz do repo)
+- **Rota de smoke test** (tela leve que prova que o ambiente respondeu): ex. `/login`
+- **Fluxo de login**: ex. abrir `/login`, preencher os campos `usuario` e `password`, submeter
+- **Credenciais de teste**: ex. `usuario_teste` / `senha_teste`
+  <!-- Use um usuário dedicado de automação, nunca credencial pessoal. -->
+- **Estratégia de limpeza para fluxos que gravam**: descreva como desfazer o que um teste
+  criar (dump/restore, limpeza por ID, registro de sandbox). **Se não houver estratégia,
+  escreva "nenhuma — apenas fluxos de leitura"**: os agentes param antes de qualquer
+  gravação. Navegação é irreversível; não existe transação envolvendo um clique.
+
 ## Acesso ao banco
 
 <!-- Como consultar o banco em modo LEITURA (o comando exige read-only sempre).
